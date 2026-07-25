@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from collections.abc import Mapping, MutableMapping
-from typing import Any
+from typing import Any, Protocol
 
 
 SESSION_PAYLOAD_VERSION = 1
@@ -30,6 +32,15 @@ PERSISTED_KEYS = {
 }
 
 PERSISTED_PREFIXES = ("quiz_answer_", "short_response_", "mock_answer_")
+SAVED_DIGEST_KEY = "_session_saved_digest"
+
+
+class ActiveSessionStore(Protocol):
+    """Minimal persistence contract used by session checkpointing."""
+
+    def save_active_session(
+        self, payload: Mapping[str, Any], data_fingerprint: str
+    ) -> None: ...
 
 
 def _integer_keys(value: Any) -> Any:
@@ -46,20 +57,101 @@ def capture_session_state(state: Mapping[str, Any]) -> dict[str, Any]:
     """Capture study workflow state without persisting source question content."""
     values: dict[str, Any] = {}
     for key, value in state.items():
-        if key in PERSISTED_KEYS or key.startswith(PERSISTED_PREFIXES):
+        if key not in PERSISTED_KEYS and not key.startswith(PERSISTED_PREFIXES):
+            continue
+        if (
+            key == "mock_session"
+            and isinstance(value, dict)
+            and isinstance(value.get("questions"), list)
+        ):
+            mock = {
+                item_key: copy.deepcopy(item_value)
+                for item_key, item_value in value.items()
+                if item_key != "questions"
+            }
+            mock["question_ids"] = [
+                question.get("_id")
+                for question in value["questions"]
+                if isinstance(question, dict) and question.get("_id")
+            ]
+            values[key] = mock
+        else:
             values[key] = copy.deepcopy(value)
 
-    mock = values.get("mock_session")
-    if isinstance(mock, dict) and isinstance(mock.get("questions"), list):
-        mock = copy.deepcopy(mock)
-        mock["question_ids"] = [
-            question.get("_id")
-            for question in mock.pop("questions")
-            if isinstance(question, dict) and question.get("_id")
-        ]
-        values["mock_session"] = mock
-
     return {"version": SESSION_PAYLOAD_VERSION, "state": values}
+
+
+def _canonical_json_value(value: Any) -> Any:
+    """Normalize mapping keys so pre/post-JSON payloads hash identically."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    return value
+
+
+def session_payload_digest(
+    payload: Mapping[str, Any],
+    data_fingerprint: str,
+    session_scope: str = "",
+) -> str:
+    """Return a canonical digest for one data-version/session snapshot pair."""
+    canonical = {
+        "data_fingerprint": data_fingerprint,
+        "session_scope": session_scope,
+        "payload": _canonical_json_value(payload),
+    }
+    serialized = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def mark_session_payload_saved(
+    state: MutableMapping[str, Any],
+    payload: Mapping[str, Any],
+    data_fingerprint: str,
+    session_scope: str = "",
+) -> None:
+    """Seed the per-browser digest after restoring an existing checkpoint."""
+    state[SAVED_DIGEST_KEY] = session_payload_digest(
+        payload,
+        data_fingerprint,
+        session_scope,
+    )
+
+
+def persist_session_if_changed(
+    store: ActiveSessionStore,
+    state: MutableMapping[str, Any],
+    data_fingerprint: str,
+    session_scope: str = "",
+) -> bool:
+    """Persist only a changed durable snapshot; return whether a write occurred."""
+    payload = capture_session_state(state)
+    digest = session_payload_digest(payload, data_fingerprint, session_scope)
+    if state.get(SAVED_DIGEST_KEY) == digest:
+        return False
+    store.save_active_session(payload, data_fingerprint)
+    state[SAVED_DIGEST_KEY] = digest
+    return True
+
+
+def ensure_session_scope(
+    state: MutableMapping[str, Any], session_scope: str
+) -> bool:
+    """Clear working state when the authenticated user or backend changes."""
+    if state.get("_session_scope") == session_scope:
+        return False
+    clear_working_session_state(state)
+    state["_session_scope"] = session_scope
+    return True
 
 
 def restore_session_state(

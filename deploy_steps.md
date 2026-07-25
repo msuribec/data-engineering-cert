@@ -67,8 +67,10 @@ from this repository and uses `app.py` as its entry point.
 
 1. Create a project from the [Supabase dashboard](https://supabase.com/dashboard)
    using the **Free** plan.
-2. Choose a region close to the learners and save the generated database
-   password in a password manager.
+2. Choose a **US region** with low latency to Streamlit Community Cloud and save
+   the generated database password in a password manager. Community Cloud runs
+   the application server in the US, so the important database hop is
+   Streamlit-to-Supabase rather than learner-to-Supabase.
 3. In the project, open **Connect** and select the **Session pooler** connection
    string.
 4. Confirm the connection hostname ends in `pooler.supabase.com` and the port is
@@ -78,6 +80,9 @@ Use the Session pooler because Streamlit is a long-running application and the
 pooler supports IPv4. Do not use the direct IPv6-only URL or the transaction
 pooler on port 6543. Supabase documents the connection choices in
 [Connecting to Postgres](https://supabase.com/docs/guides/database/connecting-to-postgres).
+The application maintains its own bounded pool of at most four warm connections
+to this endpoint; the pool is shared across learners and never stores user
+identity as connection state.
 
 The URL has this general shape:
 
@@ -287,6 +292,11 @@ Free hosting and database projects may sleep or pause after inactivity. Wake or
 resume the project from its provider dashboard, then reload the app. Review the
 current [Supabase pricing and free-plan details](https://supabase.com/pricing)
 before relying on the app for a scheduled group session.
+
+Normal clicks after warm-up should reuse the application's shared Postgres
+connections. If every click remains slow, confirm the deployed commit contains
+`psycopg[binary,pool]` in `requirements.txt`, the Supabase URL is the Session
+pooler on port 5432, and the database is in a US region.
 
 ### A deployment accidentally shows “local SQLite”
 

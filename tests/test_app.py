@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -222,6 +223,18 @@ class AppFlowTests(unittest.TestCase):
             radio for radio in first.radio if radio.label == "Answer for question 1"
         )
         answer.set_value("B").run()
+        with sqlite3.connect(self.progress_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE active_session_write_audit(writes INTEGER NOT NULL);
+                INSERT INTO active_session_write_audit VALUES (0);
+                CREATE TRIGGER audit_active_session_update
+                AFTER UPDATE ON study_active_sessions
+                BEGIN
+                    UPDATE active_session_write_audit SET writes = writes + 1;
+                END;
+                """
+            )
 
         resumed = self.app()
         self.assertEqual(resumed.exception, [])
@@ -233,6 +246,28 @@ class AppFlowTests(unittest.TestCase):
         self.assertTrue(
             any("Continued your saved session" in item.value for item in resumed.info)
         )
+        with sqlite3.connect(self.progress_path) as connection:
+            writes = connection.execute(
+                "SELECT writes FROM active_session_write_audit"
+            ).fetchone()[0]
+        self.assertEqual(writes, 0)
+
+    def test_noop_rerun_skips_session_write_but_navigation_saves(self) -> None:
+        at = self.app()
+
+        def saved_at() -> str:
+            with sqlite3.connect(self.progress_path) as connection:
+                row = connection.execute(
+                    "SELECT updated_at FROM study_active_sessions WHERE user_id='local'"
+                ).fetchone()
+            assert row is not None
+            return str(row[0])
+
+        initial = saved_at()
+        at.run()
+        self.assertEqual(saved_at(), initial)
+        at.radio[0].set_value("Flashcards").run()
+        self.assertNotEqual(saved_at(), initial)
 
     def test_start_fresh_clears_draft_but_keeps_progress(self) -> None:
         at = self.app()

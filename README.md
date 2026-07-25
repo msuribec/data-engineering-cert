@@ -19,6 +19,11 @@ Every database query is scoped with an opaque ID derived from the Google
 identity token's issuer and subject. Email addresses are used only for the
 optional deployment allowlist and are not stored in progress tables.
 
+The deployed app shares one bounded Postgres connection pool across learners,
+while each lightweight store facade keeps an immutable learner ID. Prepared
+study data is cached once per JSON modification timestamp, and working-session
+snapshots are written only when their durable state changes.
+
 ## Local setup and launch
 
 Python 3.11 or newer is recommended.
@@ -80,10 +85,11 @@ python -m py_compile \
   app.py study_core.py progress_store.py session_persistence.py src/build_data.py
 ```
 
-The suite covers user isolation, schema migration, session capture and resume,
-flashcard queues, quiz locking, mock exams, malformed data, and empty progress.
-A live Supabase connection is configured only at deployment and is not required
-to run local tests.
+The suite covers user isolation, schema migration, connection-pool behavior,
+changed-only session checkpoints, prepared-data caching, session capture and
+resume, flashcard queues, quiz locking, mock exams, malformed data, and empty
+progress. A live Supabase connection is configured only at deployment and is
+not required to run local tests.
 
 ## Spaced repetition
 

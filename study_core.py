@@ -189,10 +189,10 @@ def validate_study_data(data: Any) -> dict[str, Any]:
     return data
 
 
-def load_study_data(path: Path) -> dict[str, Any]:
-    """Read and validate study JSON with concise, actionable failures."""
+def load_study_data_snapshot(path: Path) -> tuple[dict[str, Any], str]:
+    """Read, hash, parse, and validate one immutable byte snapshot."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError as exc:
         raise StudyDataError(f"Study data was not found at {path}. Run: python src/build_data.py") from exc
     except PermissionError as exc:
@@ -200,12 +200,23 @@ def load_study_data(path: Path) -> dict[str, Any]:
     except OSError as exc:
         raise StudyDataError(f"Study data could not be read: {exc}") from exc
     try:
-        parsed = json.loads(raw)
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StudyDataError(
+            f"Study data at {path} is not valid UTF-8. Run: python src/build_data.py"
+        ) from exc
+    try:
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         raise StudyDataError(
             f"Study data contains malformed JSON near line {exc.lineno}. Run: python src/build_data.py"
         ) from exc
-    return validate_study_data(parsed)
+    return validate_study_data(parsed), hashlib.sha256(raw).hexdigest()
+
+
+def load_study_data(path: Path) -> dict[str, Any]:
+    """Read and validate study JSON with concise, actionable failures."""
+    return load_study_data_snapshot(path)[0]
 
 
 def data_file_version(path: Path) -> int:

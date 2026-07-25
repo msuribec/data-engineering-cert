@@ -72,6 +72,8 @@ There are two front ends running off the same data:
 - Cloud mode derives a stable opaque user ID from the Google identity token's issuer and subject. Email is used only by the optional access allowlist and is not stored in progress tables.
 - Every progress query is scoped by user ID. Ratings, schedules, bookmarks, quiz history, mistakes, short-answer ratings, and the active working session cannot leak between learners.
 - One working session is saved per learner. It includes navigation, flashcard queue and position, quiz drafts/review state, mock-exam ordering and timer start, and mistake-review state.
+- The cloud app uses one bounded process-wide Postgres connection pool shared across learners; identity remains an explicit query parameter and is never stored as connection state.
+- Prepared cards, quizzes, questions, lookup tables, and the data fingerprint are cached once per generated-file modification timestamp. An active-session checkpoint is written only when durable state changes.
 - Session snapshots store stable IDs rather than copies of study questions. If `data/study_data.json` changes incompatibly, only the working snapshot is discarded; long-term progress remains.
 - **Start fresh** clears the active working session while keeping progress. **Reset my progress** deletes only the signed-in learner's progress and saved session.
 - The cloud database URL and Google client secret are server-side Streamlit secrets. They must never be committed.
@@ -82,8 +84,8 @@ There are two front ends running off the same data:
 - There is currently no separate terms-generation script under `src/`. `Study Materials/Flashcards/Flashcards_Terms.csv` is an input to `src/build_data.py`.
 - `src/study_app.py` and `src/README.md` — older copies retained in `src/`; use the root-level `app.py` and `README.md` for the current layout.
 - `study_core.py` — reusable data validation, natural section ordering, stable content IDs, search/filtering, persistent review queues, and quiz-state helpers.
-- `progress_store.py` — initializes/upgrades the shared schema and stores user-scoped flashcard schedules, bookmarks, quiz attempts, mistakes, short-answer self-ratings, and active sessions. It supports SQLite locally and Postgres in deployment; existing version-one local SQLite data is migrated without deleting the legacy tables.
-- `session_persistence.py` — captures only the durable, safe subset of Streamlit session state and rehydrates question IDs against the current generated data.
+- `progress_store.py` — initializes/upgrades the shared schema and stores user-scoped flashcard schedules, bookmarks, quiz attempts, mistakes, short-answer self-ratings, and active sessions. It supports explicitly closed SQLite connections locally and a shared, four-connection Postgres pool in deployment; existing version-one local SQLite data is migrated without deleting the legacy tables.
+- `session_persistence.py` — captures only the durable, safe subset of Streamlit session state, computes canonical checkpoint digests to suppress unchanged writes, and rehydrates question IDs against the current generated data.
 - `.streamlit/config.toml` — forces the requested light theme.
 - `.streamlit/secrets.example.toml` — credential-free example for Google OIDC, Supabase, and the optional email allowlist.
 - `deploy_steps.md` — exact setup and verification steps for the free-tier multi-user architecture.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -17,6 +18,7 @@ from study_core import (
     escape_markdown_text,
     filter_cards,
     load_study_data,
+    load_study_data_snapshot,
     make_filter_signature,
     prepare_quiz_state,
     retake_quiz_state,
@@ -98,6 +100,22 @@ class CoreTests(unittest.TestCase):
     def test_missing_json_has_actionable_error(self) -> None:
         with self.assertRaisesRegex(StudyDataError, "src/build_data.py"):
             load_study_data(Path("/definitely/missing/study.json"))
+
+    def test_snapshot_loader_hashes_the_same_bytes_it_parses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "study.json"
+            raw = json.dumps(valid_data(), ensure_ascii=False).encode("utf-8")
+            path.write_bytes(raw)
+            loaded, fingerprint = load_study_data_snapshot(path)
+            self.assertEqual(loaded, valid_data())
+            self.assertEqual(fingerprint, hashlib.sha256(raw).hexdigest())
+
+    def test_invalid_utf8_has_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "study.json"
+            path.write_bytes(b"\xff\xfe")
+            with self.assertRaisesRegex(StudyDataError, "valid UTF-8"):
+                load_study_data_snapshot(path)
 
     def test_data_file_version_changes_with_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -30,10 +30,12 @@ from typing import Any
 
 import streamlit as st
 
-from progress_store import ProgressStore, from_iso, utc_now
+from progress_store import ProgressBackend, ProgressStore, from_iso, utc_now
 from session_persistence import (
-    capture_session_state,
     clear_working_session_state,
+    ensure_session_scope,
+    mark_session_payload_saved,
+    persist_session_if_changed,
     restore_session_state,
 )
 from study_core import (
@@ -46,7 +48,7 @@ from study_core import (
     ensure_review_queue,
     escape_markdown_text,
     filter_cards,
-    load_study_data,
+    load_study_data_snapshot,
     make_filter_signature,
     prepare_quiz_state,
     retake_quiz_state,
@@ -107,23 +109,54 @@ st.markdown(
 )
 
 
-@st.cache_data(show_spinner=False)
-def load_data(path_text: str, modified_ns: int) -> dict[str, Any]:
-    """Load validated JSON; modified_ns deliberately invalidates this cache."""
-    del modified_ns
-    return load_study_data(Path(path_text))
+@dataclass(frozen=True)
+class RuntimeData:
+    """Immutable-by-convention data prepared once per generated-file version."""
+
+    data: dict[str, Any]
+    cards: list[dict[str, Any]]
+    quizzes: list[dict[str, Any]]
+    questions: list[dict[str, Any]]
+    question_lookup: dict[str, dict[str, Any]]
+    fingerprint: str
 
 
 @st.cache_resource(show_spinner=False)
+def load_data(path_text: str, modified_ns: int) -> RuntimeData:
+    """Load, validate, enrich, index, and hash one generated-data version."""
+    del modified_ns
+    path = Path(path_text)
+    data, fingerprint = load_study_data_snapshot(path)
+    cards = enrich_cards(data)
+    quizzes = decorate_quizzes(data)
+    questions = all_questions(quizzes)
+    return RuntimeData(
+        data=data,
+        cards=cards,
+        quizzes=quizzes,
+        questions=questions,
+        question_lookup={question["_id"]: question for question in questions},
+        fingerprint=fingerprint,
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def open_progress_backend(
+    path_text: str, database_url: str | None
+) -> ProgressBackend:
+    """Open and initialize one process-wide storage backend."""
+    return ProgressBackend(
+        Path(path_text),
+        database_url=database_url,
+    )
+
+
 def open_progress_store(
     path_text: str, database_url: str | None, user_id: str
 ) -> ProgressStore:
-    """Open the configured user-scoped persistence backend."""
-    return ProgressStore(
-        Path(path_text),
-        database_url=database_url,
-        user_id=user_id,
-    )
+    """Create a lightweight learner facade over the shared backend."""
+    backend = open_progress_backend(path_text, database_url)
+    return ProgressStore(user_id=user_id, backend=backend)
 
 
 @dataclass(frozen=True)
@@ -198,10 +231,18 @@ def require_user(config: Mapping[str, Any]) -> UserContext:
     return UserContext(opaque_id, name, email, True)
 
 
-def start_fresh_session(store: ProgressStore) -> None:
+def make_session_scope(user: UserContext, store: ProgressStore) -> str:
+    """Hash identity and backend location without retaining database credentials."""
+    location = store.database_url or str(store.path.resolve())
+    material = f"{user.user_id}\0{store.backend}\0{location}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def start_fresh_session(store: ProgressStore, session_scope: str) -> None:
     """Discard working state without deleting long-term study progress."""
     store.clear_active_session()
     clear_working_session_state(st.session_state)
+    st.session_state["_session_scope"] = session_scope
     st.session_state["_session_initialized"] = True
     st.session_state["_session_started_fresh"] = True
 
@@ -1084,17 +1125,18 @@ def app() -> None:
 
     try:
         version = data_file_version(DATA_PATH)
-        data = load_data(str(DATA_PATH), version)
+        runtime = load_data(str(DATA_PATH), version)
     except StudyDataError as exc:
         st.error(str(exc))
         st.info("Fix or rebuild the generated file, then select Reload data.")
         st.stop()
 
-    cards = enrich_cards(data)
-    quizzes = decorate_quizzes(data)
-    questions = all_questions(quizzes)
-    question_lookup = {question["_id"]: question for question in questions}
-    data_fingerprint = hashlib.sha256(DATA_PATH.read_bytes()).hexdigest()
+    data = runtime.data
+    cards = runtime.cards
+    quizzes = runtime.quizzes
+    questions = runtime.questions
+    question_lookup = runtime.question_lookup
+    data_fingerprint = runtime.fingerprint
 
     config = configuration()
     user = require_user(config)
@@ -1110,8 +1152,12 @@ def app() -> None:
         st.info("Check the deployment secrets or local directory permissions, then retry.")
         st.stop()
 
+    session_scope = make_session_scope(user, store)
+    ensure_session_scope(st.session_state, session_scope)
+
     if st.session_state.pop("_session_reset_requested", False):
         clear_working_session_state(st.session_state)
+        st.session_state["_session_scope"] = session_scope
         st.session_state["_session_initialized"] = True
         st.session_state["_session_started_fresh"] = True
 
@@ -1125,6 +1171,12 @@ def app() -> None:
             )
             if restored:
                 st.session_state["_session_restored_at"] = saved["updated_at"]
+                mark_session_payload_saved(
+                    st.session_state,
+                    saved["payload"],
+                    data_fingerprint,
+                    session_scope,
+                )
         elif saved:
             store.clear_active_session()
             st.session_state["_session_data_changed"] = True
@@ -1140,7 +1192,7 @@ def app() -> None:
         help="Discard the active working session but keep ratings, bookmarks, and attempts.",
         width="stretch",
         on_click=start_fresh_session,
-        args=(store,),
+        args=(store, session_scope),
     )
     if user.authentication_enabled:
         identity_columns[2].button("Sign out", width="stretch", on_click=st.logout)
@@ -1188,9 +1240,11 @@ def app() -> None:
         f"{sum(len(quiz['mc']) for quiz in quizzes):,} multiple-choice questions"
     )
     try:
-        store.save_active_session(
-            capture_session_state(st.session_state),
+        persist_session_if_changed(
+            store,
+            st.session_state,
             data_fingerprint,
+            session_scope,
         )
     except Exception as exc:
         st.warning(f"Your working session could not be saved: {exc}")
