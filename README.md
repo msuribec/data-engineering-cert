@@ -22,7 +22,9 @@ optional deployment allowlist and are not stored in progress tables.
 The deployed app shares one bounded Postgres connection pool across learners,
 while each lightweight store facade keeps an immutable learner ID. Prepared
 study data is cached once per JSON modification timestamp, and working-session
-snapshots are written only when their durable state changes.
+snapshots are written only when their durable state changes. Flashcard flips
+rerender only the interactive card fragment, and queues are checkpointed as a
+compact exact ordering instead of thousands of repeated card IDs.
 
 ## Local setup and launch
 
@@ -86,10 +88,10 @@ python -m py_compile \
 ```
 
 The suite covers user isolation, schema migration, connection-pool behavior,
-changed-only session checkpoints, prepared-data caching, session capture and
-resume, flashcard queues, quiz locking, mock exams, malformed data, and empty
-progress. A live Supabase connection is configured only at deployment and is
-not required to run local tests.
+changed-only and compact session checkpoints, prepared-data caching, session
+capture and resume, flashcard flip behavior and queues, quiz locking, mock
+exams, malformed data, and empty progress. A live Supabase connection is
+configured only at deployment and is not required to run local tests.
 
 ## Spaced repetition
 

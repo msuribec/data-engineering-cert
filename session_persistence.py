@@ -8,6 +8,8 @@ import json
 from collections.abc import Mapping, MutableMapping
 from typing import Any, Protocol
 
+from study_core import compact_review_queue
+
 
 SESSION_PAYLOAD_VERSION = 1
 
@@ -20,6 +22,7 @@ PERSISTED_KEYS = {
     "fc_search",
     "fc_filter_signature",
     "fc_queue_ids",
+    "fc_queue_order",
     "fc_index",
     "fc_show_answer",
     "quiz_section",
@@ -59,6 +62,8 @@ def capture_session_state(state: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in state.items():
         if key not in PERSISTED_KEYS and not key.startswith(PERSISTED_PREFIXES):
             continue
+        if key in {"fc_queue_ids", "fc_queue_order"}:
+            continue
         if (
             key == "mock_session"
             and isinstance(value, dict)
@@ -77,6 +82,12 @@ def capture_session_state(state: Mapping[str, Any]) -> dict[str, Any]:
             values[key] = mock
         else:
             values[key] = copy.deepcopy(value)
+
+    queue = state.get("fc_queue_ids")
+    if isinstance(queue, list) and all(isinstance(card_id, str) for card_id in queue):
+        values["fc_queue_order"] = compact_review_queue(queue)
+    elif isinstance(state.get("fc_queue_order"), Mapping):
+        values["fc_queue_order"] = copy.deepcopy(state["fc_queue_order"])
 
     return {"version": SESSION_PAYLOAD_VERSION, "state": values}
 
@@ -188,6 +199,12 @@ def restore_session_state(
     queue = restored.get("fc_queue_ids")
     if queue is not None and not isinstance(queue, list):
         restored.pop("fc_queue_ids", None)
+        restored.pop("fc_queue_order", None)
+        restored.pop("fc_filter_signature", None)
+        restored["fc_index"] = 0
+    compact_queue = restored.get("fc_queue_order")
+    if compact_queue is not None and not isinstance(compact_queue, dict):
+        restored.pop("fc_queue_order", None)
         restored.pop("fc_filter_signature", None)
         restored["fc_index"] = 0
 

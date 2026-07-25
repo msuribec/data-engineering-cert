@@ -8,6 +8,7 @@ import json
 import random
 import re
 import unicodedata
+from collections import defaultdict, deque
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -302,6 +303,54 @@ def make_filter_signature(
     return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
 
+def _queue_cards_digest(card_ids: Sequence[str]) -> str:
+    """Hash a card-ID multiset without depending on its review order."""
+    digest = hashlib.sha256()
+    for card_id in sorted(card_ids):
+        encoded = card_id.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def compact_review_queue(card_ids: Sequence[str]) -> dict[str, Any]:
+    """Encode an exact queue as compact positions in its sorted card-ID set."""
+    sorted_ids = sorted(card_ids)
+    positions: dict[str, deque[int]] = defaultdict(deque)
+    for index, card_id in enumerate(sorted_ids):
+        positions[card_id].append(index)
+    order = [positions[card_id].popleft() for card_id in card_ids]
+    return {
+        "version": 1,
+        "count": len(sorted_ids),
+        "cards_digest": _queue_cards_digest(sorted_ids),
+        "order": order,
+    }
+
+
+def expand_review_queue(
+    compact: Any,
+    available_card_ids: Sequence[str],
+) -> list[str] | None:
+    """Restore a compact queue only when it matches the current filtered cards."""
+    if not isinstance(compact, Mapping) or compact.get("version") != 1:
+        return None
+    order = compact.get("order")
+    if not isinstance(order, list):
+        return None
+    sorted_ids = sorted(available_card_ids)
+    count = len(sorted_ids)
+    if compact.get("count") != count or len(order) != count:
+        return None
+    if any(not isinstance(index, int) or isinstance(index, bool) for index in order):
+        return None
+    if len(set(order)) != count or any(index < 0 or index >= count for index in order):
+        return None
+    if compact.get("cards_digest") != _queue_cards_digest(sorted_ids):
+        return None
+    return [sorted_ids[index] for index in order]
+
+
 def ensure_review_queue(
     state: MutableMapping[str, Any],
     signature: str,
@@ -313,11 +362,20 @@ def ensure_review_queue(
     """Maintain a stable queue until filters change or reshuffle is explicit."""
     available = list(card_ids)
     current = state.get("fc_queue_ids", [])
+    signature_matches = state.get("fc_filter_signature") == signature
+    current_is_valid = (
+        isinstance(current, list)
+        and len(current) == len(available)
+        and sorted(current) == sorted(available)
+    )
+    if not current_is_valid and signature_matches:
+        restored = expand_review_queue(state.get("fc_queue_order"), available)
+        if restored is not None:
+            current = restored
+            current_is_valid = True
     queue_is_stale = (
-        state.get("fc_filter_signature") != signature
-        or not isinstance(current, list)
-        or len(current) != len(available)
-        or set(current) != set(available)
+        not signature_matches
+        or not current_is_valid
     )
     if queue_is_stale:
         current = available.copy()
@@ -330,6 +388,7 @@ def ensure_review_queue(
         state["fc_show_answer"] = False
     state["fc_filter_signature"] = signature
     state["fc_queue_ids"] = current
+    state.pop("fc_queue_order", None)
     if current:
         state["fc_index"] = min(int(state.get("fc_index", 0)), len(current) - 1)
     else:

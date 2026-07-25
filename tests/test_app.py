@@ -8,7 +8,10 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import progress_store
+import study_core
 from streamlit.testing.v1 import AppTest
 
 
@@ -122,6 +125,100 @@ class AppFlowTests(unittest.TestCase):
         next(button for button in at.button if button.label == "Previous").click().run()
         self.assertEqual(at.session_state["fc_index"], 0)
         self.assertEqual(at.session_state["fc_queue_ids"][0], first_id)
+
+    def test_flashcard_flip_uses_one_rerun_and_preserves_queue(self) -> None:
+        version_calls = 0
+        progress_reads = 0
+        session_writes = 0
+        original_version = study_core.data_file_version
+        original_progress = progress_store.ProgressStore.get_deck_progress
+        original_save = progress_store.ProgressStore.save_active_session
+
+        def counted_version(path: Path) -> int:
+            nonlocal version_calls
+            version_calls += 1
+            return original_version(path)
+
+        def counted_progress(
+            store: progress_store.ProgressStore,
+            deck: str,
+        ) -> dict:
+            nonlocal progress_reads
+            progress_reads += 1
+            return original_progress(store, deck)
+
+        def counted_save(
+            store: progress_store.ProgressStore,
+            payload: dict,
+            data_fingerprint: str,
+        ) -> None:
+            nonlocal session_writes
+            session_writes += 1
+            original_save(store, payload, data_fingerprint)
+
+        with (
+            patch.object(study_core, "data_file_version", new=counted_version),
+            patch.object(
+                progress_store.ProgressStore,
+                "get_deck_progress",
+                new=counted_progress,
+            ),
+            patch.object(
+                progress_store.ProgressStore,
+                "save_active_session",
+                new=counted_save,
+            ),
+        ):
+            at = self.app()
+            at.radio[0].set_value("Flashcards").run()
+            queue = list(at.session_state["fc_queue_ids"])
+            index = at.session_state["fc_index"]
+            versions_before = version_calls
+            reads_before = progress_reads
+            writes_before = session_writes
+
+            next(
+                button for button in at.button if button.label == "Reveal answer"
+            ).click().run()
+
+        self.assertEqual(at.exception, [])
+        self.assertTrue(at.session_state["fc_show_answer"])
+        self.assertEqual(list(at.session_state["fc_queue_ids"]), queue)
+        self.assertEqual(at.session_state["fc_index"], index)
+        self.assertTrue(any(button.label == "Show front" for button in at.button))
+        self.assertLessEqual(version_calls - versions_before, 1)
+        self.assertLessEqual(progress_reads - reads_before, 1)
+        self.assertEqual(session_writes - writes_before, 1)
+
+    def test_flashcard_side_and_compact_queue_resume(self) -> None:
+        at = self.app()
+        at.radio[0].set_value("Flashcards").run()
+        next(button for button in at.button if button.label == "Shuffle queue").click().run()
+        queue = list(at.session_state["fc_queue_ids"])
+        index = at.session_state["fc_index"]
+        next(button for button in at.button if button.label == "Reveal answer").click().run()
+
+        with sqlite3.connect(self.progress_path) as connection:
+            payload = json.loads(
+                connection.execute(
+                    """
+                    SELECT payload_json FROM study_active_sessions
+                    WHERE user_id='local'
+                    """
+                ).fetchone()[0]
+            )
+        self.assertNotIn("fc_queue_ids", payload["state"])
+        self.assertIn("fc_queue_order", payload["state"])
+
+        resumed = self.app()
+        self.assertEqual(resumed.exception, [])
+        self.assertEqual(resumed.radio[0].value, "Flashcards")
+        self.assertEqual(list(resumed.session_state["fc_queue_ids"]), queue)
+        self.assertEqual(resumed.session_state["fc_index"], index)
+        self.assertTrue(resumed.session_state["fc_show_answer"])
+        self.assertTrue(
+            any(button.label == "Show front" for button in resumed.button)
+        )
 
     def test_flashcard_clear_filters(self) -> None:
         at = self.app()

@@ -75,6 +75,23 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(record["last_rating"], "Good")
         self.assertEqual(record["bookmarked"], 1)
 
+    def test_deck_progress_is_filtered_and_user_scoped(self) -> None:
+        learner_a = ProgressStore(self.path, user_id="learner-a")
+        learner_b = ProgressStore(self.path, user_id="learner-b")
+        learner_a.rate_card("qa-card", "Section 2", "flashcards_qa", "Good", now=NOW)
+        learner_a.rate_card(
+            "term-card",
+            "Section 2",
+            "flashcards_terms",
+            "Good",
+            now=NOW,
+        )
+        learner_b.rate_card("other-card", "Section 2", "flashcards_qa", "Good", now=NOW)
+        self.assertEqual(
+            set(learner_a.get_deck_progress("flashcards_qa")),
+            {"qa-card"},
+        )
+
     def test_mistake_history_and_resolution_persist(self) -> None:
         self.store.record_quiz_attempt(
             quiz_id="quiz",

@@ -13,9 +13,11 @@ from pathlib import Path
 from study_core import (
     StudyDataError,
     canonical_section_key,
+    compact_review_queue,
     data_file_version,
     ensure_review_queue,
     escape_markdown_text,
+    expand_review_queue,
     filter_cards,
     load_study_data,
     load_study_data_snapshot,
@@ -145,6 +147,37 @@ class CoreTests(unittest.TestCase):
         after_next_rerun = ensure_review_queue(state, signature, original)
         self.assertEqual(shuffled, after_next_rerun)
         self.assertEqual(after_next_rerun[3], shuffled[3])
+
+    def test_compact_queue_round_trip_preserves_exact_order(self) -> None:
+        queue = ["card-c", "card-a", "card-b", "card-a"]
+        compact = compact_review_queue(queue)
+        self.assertEqual(
+            expand_review_queue(compact, ["card-a", "card-a", "card-b", "card-c"]),
+            queue,
+        )
+        self.assertIsNone(
+            expand_review_queue(compact, ["card-a", "card-b", "card-c"])
+        )
+
+    def test_compact_queue_restores_after_a_new_session(self) -> None:
+        signature = make_filter_signature("deck", ["2"], [], "s3", "all")
+        original = [f"id-{number}" for number in range(12)]
+        first_state: dict = {}
+        shuffled = ensure_review_queue(
+            first_state,
+            signature,
+            original,
+            reshuffle=True,
+            rng=random.Random(4),
+        ).copy()
+        restored_state = {
+            "fc_filter_signature": signature,
+            "fc_queue_order": compact_review_queue(shuffled),
+            "fc_index": 4,
+        }
+        restored = ensure_review_queue(restored_state, signature, original)
+        self.assertEqual(restored, shuffled)
+        self.assertEqual(restored_state["fc_index"], 4)
 
     def test_equal_count_filter_change_rebuilds_queue(self) -> None:
         state: dict = {}

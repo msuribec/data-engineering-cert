@@ -278,6 +278,7 @@ class ProgressBackend:
             )
             """,
             "CREATE INDEX IF NOT EXISTS study_card_due_idx ON study_card_progress(user_id, next_due)",
+            "CREATE INDEX IF NOT EXISTS study_card_deck_idx ON study_card_progress(user_id, deck)",
             "CREATE INDEX IF NOT EXISTS study_card_event_user_idx ON study_card_review_events(user_id, reviewed_at)",
             "CREATE INDEX IF NOT EXISTS study_quiz_user_idx ON study_quiz_attempts(user_id, attempted_at)",
         ]
@@ -446,6 +447,19 @@ class ProgressStore:
                 ).fetchall()
                 records.update({row["card_id"]: dict(row) for row in rows})
         return records
+
+    def get_deck_progress(self, deck: str) -> dict[str, dict[str, Any]]:
+        """Return this learner's stored rows for one deck without a large ID list."""
+        with self._connect() as connection:
+            rows = self._execute(
+                connection,
+                """
+                SELECT * FROM study_card_progress
+                WHERE user_id=? AND deck=?
+                """,
+                (self.user_id, deck),
+            ).fetchall()
+        return {row["card_id"]: dict(row) for row in rows}
 
     def rate_card(
         self,

@@ -74,6 +74,7 @@ There are two front ends running off the same data:
 - One working session is saved per learner. It includes navigation, flashcard queue and position, quiz drafts/review state, mock-exam ordering and timer start, and mistake-review state.
 - The cloud app uses one bounded process-wide Postgres connection pool shared across learners; identity remains an explicit query parameter and is never stored as connection state.
 - Prepared cards, quizzes, questions, lookup tables, and the data fingerprint are cached once per generated-file modification timestamp. An active-session checkpoint is written only when durable state changes.
+- The interactive flashcard surface uses a native Streamlit fragment, so flipping or moving between cards does not rerun filters, authentication, or progress queries. Exact queue order is stored compactly while the visible side remains resumable.
 - Session snapshots store stable IDs rather than copies of study questions. If `data/study_data.json` changes incompatibly, only the working snapshot is discarded; long-term progress remains.
 - **Start fresh** clears the active working session while keeping progress. **Reset my progress** deletes only the signed-in learner's progress and saved session.
 - The cloud database URL and Google client secret are server-side Streamlit secrets. They must never be committed.

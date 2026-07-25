@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
 
 from session_persistence import (
@@ -17,6 +19,26 @@ from session_persistence import (
 
 
 class SessionPersistenceTests(unittest.TestCase):
+    def test_flashcard_queue_checkpoint_is_compact(self) -> None:
+        queue = [
+            hashlib.sha256(f"card-{index}".encode()).hexdigest()
+            for index in range(2_563)
+        ]
+        payload = capture_session_state(
+            {
+                "main_nav": "Flashcards",
+                "fc_queue_ids": queue,
+                "fc_index": 123,
+                "fc_show_answer": True,
+            }
+        )
+        saved = payload["state"]
+        self.assertNotIn("fc_queue_ids", saved)
+        self.assertIn("fc_queue_order", saved)
+        compact_size = len(json.dumps(payload, separators=(",", ":")))
+        raw_size = len(json.dumps(queue, separators=(",", ":")))
+        self.assertLess(compact_size, raw_size // 5)
+
     def test_capture_uses_stable_question_ids_not_source_content(self) -> None:
         state = {
             "main_nav": "Mock Exam",

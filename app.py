@@ -310,6 +310,28 @@ def clear_flashcard_filters() -> None:
     st.session_state["fc_view"] = "All matching cards"
 
 
+def start_flashcard_queue() -> None:
+    """Return to the first queued card with its front visible."""
+    st.session_state["fc_index"] = 0
+    st.session_state["fc_show_answer"] = False
+
+
+def move_flashcard(offset: int, queue_length: int) -> None:
+    """Move within the current queue before the card fragment reruns."""
+    if queue_length <= 0:
+        return
+    current = int(st.session_state.get("fc_index", 0))
+    st.session_state["fc_index"] = (current + offset) % queue_length
+    st.session_state["fc_show_answer"] = False
+
+
+def toggle_flashcard_answer() -> None:
+    """Flip the current card without forcing a second Streamlit rerun."""
+    st.session_state["fc_show_answer"] = not bool(
+        st.session_state.get("fc_show_answer", False)
+    )
+
+
 def render_service_answer(back: str) -> None:
     """Preserve the service-card Purpose/When-to-use structure safely."""
     parts = [part.strip() for part in back.split(" | ") if part.strip()]
@@ -452,10 +474,111 @@ def render_dashboard(
             st.rerun()
 
 
+@st.fragment
+def render_flashcard_reviewer(
+    store: ProgressStore,
+    queue: Sequence[str],
+    card_by_id: Mapping[str, Mapping[str, Any]],
+    progress: Mapping[str, Mapping[str, Any]],
+    labels: Mapping[str, str],
+    data_fingerprint: str,
+    session_scope: str,
+) -> None:
+    """Render the interactive card surface without rerunning filters or progress reads."""
+    index = int(st.session_state.get("fc_index", 0)) % len(queue)
+    card = card_by_id[queue[index]]
+    record = progress.get(card["_id"], {})
+    show_answer = bool(st.session_state.get("fc_show_answer", False))
+
+    st.progress((index + 1) / len(queue), text=f"Card {index + 1} of {len(queue)}")
+    status = (
+        "New"
+        if not record.get("review_count")
+        else f"{record['review_count']} reviews · {format_when(record.get('next_due'))}"
+    )
+    with st.container(horizontal=True, gap="small"):
+        st.badge(card["_deck_label"], color="blue")
+        st.badge(labels.get(card["_section_key"], card["section"]), color="gray")
+        for number in card["_domains"]:
+            st.badge(f"Domain {number}", color="orange")
+        st.badge(status, color="green" if record.get("review_count") else "gray")
+
+    with st.container(
+        border=True,
+        key="flashcard_answer" if show_answer else "flashcard_front",
+    ):
+        st.caption("ANSWER" if show_answer else "FRONT")
+        render_card_text(card, show_answer)
+
+    bookmark_label = "Remove bookmark" if record.get("bookmarked") else "Bookmark"
+    nav_columns = st.columns((1, 1, 1, 1))
+    nav_columns[0].button(
+        "Previous",
+        width="stretch",
+        on_click=move_flashcard,
+        args=(-1, len(queue)),
+    )
+    nav_columns[1].button(
+        "Show front" if show_answer else "Reveal answer",
+        type="primary",
+        width="stretch",
+        on_click=toggle_flashcard_answer,
+    )
+    nav_columns[2].button(
+        "Next",
+        width="stretch",
+        on_click=move_flashcard,
+        args=(1, len(queue)),
+    )
+    if nav_columns[3].button(bookmark_label, width="stretch"):
+        store.set_bookmark(
+            card["_id"], card["section"], card["_deck"], not bool(record.get("bookmarked"))
+        )
+        st.rerun(scope="app")
+
+    if show_answer:
+        st.markdown("#### How well did you remember it?")
+        rating_columns = st.columns(4)
+        rating_help = {
+            "Again": "10 min",
+            "Hard": "Soon",
+            "Good": "Normal",
+            "Easy": "Later",
+        }
+        for column, rating in zip(rating_columns, rating_help, strict=True):
+            if column.button(
+                f"{rating}\n\n{rating_help[rating]}",
+                key=f"rate_{rating.lower()}",
+                width="stretch",
+            ):
+                store.rate_card(
+                    card["_id"], card["section"], card["_deck"], rating
+                )
+                st.session_state["fc_index"] = (index + 1) % len(queue)
+                st.session_state["fc_show_answer"] = False
+                st.rerun(scope="app")
+    st.caption(
+        "Keyboard shortcuts are not enabled because Streamlit has no reliable native, "
+        "focus-safe key event API. The visible controls remain keyboard accessible."
+    )
+
+    try:
+        persist_session_if_changed(
+            store,
+            st.session_state,
+            data_fingerprint,
+            session_scope,
+        )
+    except Exception as exc:
+        st.warning(f"Your working session could not be saved: {exc}")
+
+
 def render_flashcards(
     data: Mapping[str, Any],
     store: ProgressStore,
     cards: Sequence[Mapping[str, Any]],
+    data_fingerprint: str,
+    session_scope: str,
 ) -> None:
     st.header("Flashcards")
     labels = section_display_map(data, cards)
@@ -507,7 +630,12 @@ def render_flashcards(
         domains=selected_domains,
         query=query,
     )
-    progress = store.get_card_progress([card["_id"] for card in matching])
+    deck_progress = store.get_deck_progress(deck)
+    progress = {
+        card["_id"]: deck_progress[card["_id"]]
+        for card in matching
+        if card["_id"] in deck_progress
+    }
     now = utc_now()
     due_count = sum(
         1
@@ -558,10 +686,11 @@ def render_flashcards(
     )
     action_columns = st.columns((1, 1, 3))
     reshuffle = action_columns[0].button("Shuffle queue", width="stretch")
-    if action_columns[1].button("Start from first", width="stretch"):
-        st.session_state["fc_index"] = 0
-        st.session_state["fc_show_answer"] = False
-        st.rerun()
+    action_columns[1].button(
+        "Start from first",
+        width="stretch",
+        on_click=start_flashcard_queue,
+    )
     queue = ensure_review_queue(
         st.session_state,
         signature,
@@ -577,78 +706,14 @@ def render_flashcards(
         return
 
     card_by_id = {card["_id"]: card for card in visible}
-    index = int(st.session_state.get("fc_index", 0)) % len(queue)
-    card = card_by_id[queue[index]]
-    record = progress.get(card["_id"], {})
-    show_answer = bool(st.session_state.get("fc_show_answer", False))
-
-    st.progress((index + 1) / len(queue), text=f"Card {index + 1} of {len(queue)}")
-    status = (
-        "New"
-        if not record.get("review_count")
-        else f"{record['review_count']} reviews · {format_when(record.get('next_due'))}"
-    )
-    with st.container(horizontal=True, gap="small"):
-        st.badge(card["_deck_label"], color="blue")
-        st.badge(labels.get(card["_section_key"], card["section"]), color="gray")
-        for number in card["_domains"]:
-            st.badge(f"Domain {number}", color="orange")
-        st.badge(status, color="green" if record.get("review_count") else "gray")
-
-    with st.container(
-        border=True,
-        key="flashcard_answer" if show_answer else "flashcard_front",
-    ):
-        st.caption("ANSWER" if show_answer else "FRONT")
-        render_card_text(card, show_answer)
-
-    bookmark_label = "Remove bookmark" if record.get("bookmarked") else "Bookmark"
-    nav_columns = st.columns((1, 1, 1, 1))
-    if nav_columns[0].button("Previous", width="stretch"):
-        st.session_state["fc_index"] = (index - 1) % len(queue)
-        st.session_state["fc_show_answer"] = False
-        st.rerun()
-    if nav_columns[1].button(
-        "Show front" if show_answer else "Reveal answer",
-        type="primary",
-        width="stretch",
-    ):
-        st.session_state["fc_show_answer"] = not show_answer
-        st.rerun()
-    if nav_columns[2].button("Next", width="stretch"):
-        st.session_state["fc_index"] = (index + 1) % len(queue)
-        st.session_state["fc_show_answer"] = False
-        st.rerun()
-    if nav_columns[3].button(bookmark_label, width="stretch"):
-        store.set_bookmark(
-            card["_id"], card["section"], card["_deck"], not bool(record.get("bookmarked"))
-        )
-        st.rerun()
-
-    if show_answer:
-        st.markdown("#### How well did you remember it?")
-        rating_columns = st.columns(4)
-        rating_help = {
-            "Again": "10 min",
-            "Hard": "Soon",
-            "Good": "Normal",
-            "Easy": "Later",
-        }
-        for column, rating in zip(rating_columns, rating_help, strict=True):
-            if column.button(
-                f"{rating}\n\n{rating_help[rating]}",
-                key=f"rate_{rating.lower()}",
-                width="stretch",
-            ):
-                store.rate_card(
-                    card["_id"], card["section"], card["_deck"], rating
-                )
-                st.session_state["fc_index"] = (index + 1) % len(queue)
-                st.session_state["fc_show_answer"] = False
-                st.rerun()
-    st.caption(
-        "Keyboard shortcuts are not enabled because Streamlit has no reliable native, "
-        "focus-safe key event API. The visible controls remain keyboard accessible."
+    render_flashcard_reviewer(
+        store,
+        queue,
+        card_by_id,
+        progress,
+        labels,
+        data_fingerprint,
+        session_scope,
     )
 
 
@@ -1245,7 +1310,13 @@ def app() -> None:
     if navigation == "Dashboard":
         render_dashboard(store, cards)
     elif navigation == "Flashcards":
-        render_flashcards(data, store, cards)
+        render_flashcards(
+            data,
+            store,
+            cards,
+            data_fingerprint,
+            session_scope,
+        )
     elif navigation == "Quizzes":
         render_quizzes(data, store, quizzes)
     elif navigation == "Mock Exam":
