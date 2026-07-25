@@ -1144,6 +1144,12 @@ def app() -> None:
     )
     if user.authentication_enabled:
         identity_columns[2].button("Sign out", width="stretch", on_click=st.logout)
+    if store.backend == "sqlite":
+        st.warning(
+            "Local SQLite mode: progress is stored only on this machine. "
+            "If this app is running on Streamlit Community Cloud, do not begin "
+            "studying until Google sign-in and Supabase are configured."
+        )
     if st.session_state.get("_session_restored_at"):
         restored_at = from_iso(st.session_state["_session_restored_at"])
         when = restored_at.astimezone().strftime("%b %-d, %-I:%M %p") if restored_at else "earlier"

@@ -105,6 +105,9 @@ class AppFlowTests(unittest.TestCase):
         self.assertTrue(self.progress_path.exists())
         self.assertEqual(at.header[0].value, "Dashboard")
         self.assertIn("Your study history is empty", at.info[0].value)
+        self.assertTrue(
+            any("Local SQLite mode" in warning.value for warning in at.warning)
+        )
 
     def test_flashcard_shuffle_persists_through_navigation(self) -> None:
         at = self.app()

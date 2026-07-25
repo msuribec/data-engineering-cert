@@ -106,8 +106,10 @@ SQL is required.
    https://dea-study-group.streamlit.app
    ```
 
-5. Deploy once. It is expected to show a sign-in or configuration issue until
-   the secrets below are added.
+5. Deploy once. Before the secrets below are added, the app deliberately starts
+   in its local-development fallback and displays a prominent **Local SQLite
+   mode** warning. This temporary preview is useful for confirming that the app
+   builds, but its progress is not durable and it is not ready for learners.
 
 Community Cloud's current private-app sharing behavior is described in
 [Share your app](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app).
@@ -255,6 +257,12 @@ for character. Both must be:
 ```text
 https://YOUR-APP.streamlit.app/oauth2callback
 ```
+
+### Streamlit reports `Authentication requires Authlib`
+
+Confirm the deployed commit includes `Authlib>=1.3.2,<2` in
+`requirements.txt`. Push that commit and reboot the app so Community Cloud
+rebuilds the Python environment before trying Google sign-in again.
 
 ### An invited learner is “not authorized”
 
