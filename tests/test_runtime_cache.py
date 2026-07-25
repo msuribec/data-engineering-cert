@@ -91,6 +91,28 @@ class RuntimeDataCacheTests(unittest.TestCase):
         self.assertEqual(learner_a.user_id, "learner-a")
         self.assertEqual(learner_b.user_id, "learner-b")
 
+    def test_progress_loader_supports_a_hot_reloaded_legacy_store(self) -> None:
+        class LegacyStore:
+            def __init__(self) -> None:
+                self.requested_ids: list[str] = []
+
+            def get_card_progress(self, card_ids: list[str]) -> dict:
+                self.requested_ids = card_ids
+                return {
+                    "card-a": {"review_count": 1},
+                    "unrelated": {"review_count": 2},
+                }
+
+        store = LegacyStore()
+        cards = [{"_id": "card-a"}, {"_id": "card-b"}]
+        progress = app.load_matching_card_progress(
+            store,  # type: ignore[arg-type]
+            "flashcards_qa",
+            cards,
+        )
+        self.assertEqual(store.requested_ids, ["card-a", "card-b"])
+        self.assertEqual(progress, {"card-a": {"review_count": 1}})
+
 
 if __name__ == "__main__":
     unittest.main()

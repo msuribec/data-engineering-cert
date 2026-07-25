@@ -332,6 +332,26 @@ def toggle_flashcard_answer() -> None:
     )
 
 
+def load_matching_card_progress(
+    store: ProgressStore,
+    deck: str,
+    cards: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Load progress efficiently, with a safe fallback for hot-reloaded stores."""
+    card_ids = [card["_id"] for card in cards]
+    deck_loader = getattr(store, "get_deck_progress", None)
+    records = (
+        deck_loader(deck)
+        if callable(deck_loader)
+        else store.get_card_progress(card_ids)
+    )
+    return {
+        card_id: records[card_id]
+        for card_id in card_ids
+        if card_id in records
+    }
+
+
 def render_service_answer(back: str) -> None:
     """Preserve the service-card Purpose/When-to-use structure safely."""
     parts = [part.strip() for part in back.split(" | ") if part.strip()]
@@ -630,12 +650,7 @@ def render_flashcards(
         domains=selected_domains,
         query=query,
     )
-    deck_progress = store.get_deck_progress(deck)
-    progress = {
-        card["_id"]: deck_progress[card["_id"]]
-        for card in matching
-        if card["_id"] in deck_progress
-    }
+    progress = load_matching_card_progress(store, deck, matching)
     now = utc_now()
     due_count = sum(
         1
