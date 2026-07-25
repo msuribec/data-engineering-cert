@@ -96,6 +96,14 @@ st.markdown(
     .st-key-flashcard_answer {
         border-left: 0.3rem solid var(--study-orange);
     }
+    .st-key-app_header {
+        flex-wrap: wrap;
+        row-gap: 0.5rem;
+    }
+    .st-key-reload_data button {
+        min-width: 8rem;
+        white-space: nowrap;
+    }
     @media (max-width: 640px) {
         .block-container { padding-left: 1rem; padding-right: 1rem; }
         h1 { font-size: 1.8rem; }
@@ -1116,12 +1124,23 @@ def render_mistake_review(
 
 def app() -> None:
     """Load dependencies and render the selected application view."""
-    header, reload_column = st.columns((6, 1))
-    header.title("AWS Data Engineer Study")
-    header.caption("DEA-C01 · private progress for every learner")
-    if reload_column.button("Reload data", width="stretch"):
-        load_data.clear()
-        st.rerun()
+    with st.container(
+        key="app_header",
+        horizontal=True,
+        horizontal_alignment="distribute",
+        vertical_alignment="center",
+    ):
+        with st.container():
+            st.title("AWS Data Engineer Study")
+            st.caption("DEA-C01 · private progress for every learner")
+        if st.button(
+            "Reload data",
+            key="reload_data",
+            width="content",
+            help="Re-read the generated study data file.",
+        ):
+            load_data.clear()
+            st.rerun()
 
     try:
         version = data_file_version(DATA_PATH)
