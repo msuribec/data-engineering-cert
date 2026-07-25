@@ -260,9 +260,11 @@ https://YOUR-APP.streamlit.app/oauth2callback
 
 ### Streamlit reports `Authentication requires Authlib`
 
-Confirm the deployed commit includes `Authlib>=1.3.2,<2` in
-`requirements.txt`. Push that commit and reboot the app so Community Cloud
-rebuilds the Python environment before trying Google sign-in again.
+Confirm the deployed commit includes `streamlit[auth]>=1.42,<2` in
+`requirements.txt`. The `auth` extra installs both Authlib and the HTTP client
+required by Streamlit's OAuth routes. Push that commit and reboot the app so
+Community Cloud rebuilds the Python environment before trying Google sign-in
+again.
 
 ### An invited learner is “not authorized”
 
